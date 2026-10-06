@@ -49,8 +49,6 @@ A small Python tool that checks Lidl's UK online leaflets page, downloads any ne
    cp config.example.json config.json
    ```
 
-6. Set your Lidl store cookies in `config.json`. You can extract these from your browser after visiting [Lidl online leaflets](https://www.lidl.co.uk/c/online-leaflets/s10023175) and selecting your store.
-
 ## Configuration
 
 See `config.example.json` for the available options.
@@ -59,20 +57,11 @@ See `config.example.json` for the available options.
 | --- | --- |
 | `output_dir` | Folder where leaflets are saved. |
 | `headless` | Run the browser without a window (`true` / `false`). |
-| `cookies` | Lidl store cookies required to filter leaflets by store. |
 | `pushover.enabled` | Enable Pushover notifications. |
 | `pushover.token` | Your Pushover application token. |
 | `pushover.user` | Your Pushover user key. |
 | `home_assistant.enabled` | Enable Home Assistant webhook notifications. |
 | `home_assistant.webhook_url` | Your Home Assistant webhook URL. |
-
-### Getting Lidl store cookies
-
-1. Open [https://www.lidl.co.uk/c/online-leaflets/s10023175](https://www.lidl.co.uk/c/online-leaflets/s10023175) in Chrome.
-2. Select your store.
-3. Open Developer Tools (`F12`) → **Application** → **Cookies** → `https://www.lidl.co.uk`.
-4. Copy the values for the relevant cookies, such as `st`, `ar`, `wh`, and `zn`.
-5. Paste them into `config.json` under the `cookies` section.
 
 ### Home Assistant webhook
 
@@ -144,12 +133,6 @@ Example cron entry running every Tuesday morning:
 {
   "output_dir": "leaflets",
   "headless": true,
-  "cookies": {
-    "st": "",
-    "ar": "",
-    "wh": "",
-    "zn": ""
-  },
   "pushover": {
     "enabled": false,
     "token": "",
