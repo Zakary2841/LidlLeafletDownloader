@@ -1,0 +1,50 @@
+alias: Lidl leaflet notification
+description: Notify when a new Lidl leaflet is downloaded
+trigger:
+  - platform: webhook
+    webhook_id: lidl_leaflet
+    allowed_methods:
+      - POST
+    local_only: false
+condition: []
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.json.type == 'new_leaflet' }}"
+        sequence:
+          - action: notify.mobile_app_your_phone
+            data:
+              title: "New Lidl leaflet"
+              message: "{{ trigger.json.filename }}"
+              data:
+                ttl: 0
+                priority: high
+                channel: LidlLeaflets
+                sticky: false
+                tag: "{{ trigger.json.filename }}"
+                clickAction: "{{ trigger.json.viewer_url }}"
+                actions:
+                  - action: URI
+                    title: "Open flyer"
+                    uri: "{{ trigger.json.viewer_url }}"
+                notification_icon: mdi:basket
+                color: red
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.json.type == 'error' }}"
+        sequence:
+          - action: notify.mobile_app_your_phone
+            data:
+              title: "Lidl leaflet download failed"
+              message: "{{ trigger.json.message[:250] }}"
+              data:
+                ttl: 0
+                priority: high
+                channel: LidlLeaflets
+                sticky: false
+                tag: lidl_leaflet_error
+                notification_icon: mdi:alert
+                color: red
+mode: parallel
+max: 10
