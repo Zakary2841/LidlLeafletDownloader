@@ -311,25 +311,73 @@ def get_leaflet_urls(page):
     return urls
 
 
+def find_pdf_in_dom(page):
+    """Return the first visible .pdf href found anywhere in the DOM."""
+    hrefs = page.evaluate("""
+        () => Array.from(document.querySelectorAll('a[href*=".pdf"], button[onclick*=".pdf"], [data-href*=".pdf"]'))
+            .map(el => el.href || el.getAttribute('href') || el.getAttribute('data-href') || el.getAttribute('onclick'))
+            .filter(h => h && h.includes('.pdf'))
+    """)
+
+    for href in hrefs:
+        if href:
+            return href
+
+    return None
+
+
+def click_menu_and_get_pdf(page):
+    menu_selectors = [
+        "button[aria-label='Menu']",
+        "button[aria-label*='menu' i]",
+        "button[aria-label='Open menu']",
+        "button[title='Menu']",
+        "button[title*='menu' i]",
+        "[data-testid='menu-button']",
+        "button svg[aria-label='Menu']",
+    ]
+
+    for selector in menu_selectors:
+        button = page.locator(selector).first
+
+        if button.count() > 0:
+            try:
+                if button.is_visible():
+                    print(f"Clicking menu via selector: {selector}")
+                    button.click()
+                    page.wait_for_timeout(1000)
+
+                    pdf_href = find_pdf_in_dom(page)
+
+                    if pdf_href:
+                        return pdf_href
+
+                    link = page.locator("a[href*='.pdf']").first
+                    if link.count() > 0 and link.is_visible():
+                        return urljoin(page.url, link.get_attribute("href"))
+            except Exception:
+                continue
+
+    return None
+
+
 def get_pdf_url(page):
     page.wait_for_timeout(2000)
+
+    pdf_href = find_pdf_in_dom(page)
+
+    if pdf_href:
+        return urljoin(page.url, pdf_href)
 
     link = page.locator("a[href*='.pdf']").first
     if link.count() > 0 and link.is_visible():
         return urljoin(page.url, link.get_attribute("href"))
 
-    try:
-        menu_button = page.locator("button[aria-label='Menu']").first
-        if menu_button.is_visible():
-            print("PDF not visible, opening Menu...")
-            menu_button.click()
-            page.wait_for_timeout(1000)
+    print("PDF not visible, trying Menu...")
+    pdf_url = click_menu_and_get_pdf(page)
 
-            link = page.locator("a[href*='.pdf']").first
-            if link.count() > 0 and link.is_visible():
-                return urljoin(page.url, link.get_attribute("href"))
-    except Exception:
-        pass
+    if pdf_url:
+        return pdf_url
 
     return None
 
@@ -357,12 +405,19 @@ def download_leaflet(page, leaflet_url, config):
     try:
         print(f"\nProcessing leaflet: {leaflet_url}")
 
-        page.goto(leaflet_url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+        page.goto(leaflet_url, wait_until="networkidle", timeout=PAGE_TIMEOUT)
 
         pdf_url = get_pdf_url(page)
 
         if not pdf_url:
             print(f"Could not find PDF URL for {leaflet_url}")
+            debug_dir = BASE_DIR / "debug"
+            debug_dir.mkdir(exist_ok=True)
+            debug_file = debug_dir / f"debug-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+            page_text = page.evaluate("() => document.body.innerText")[:5000]
+            with debug_file.open("w", encoding="utf-8") as f:
+                f.write(f"URL: {leaflet_url}\n\nVISIBLE TEXT:\n{page_text}\n")
+            print(f"Debug info saved to {debug_file}")
             return False
 
         print(f"Found PDF: {pdf_url}")
@@ -386,11 +441,15 @@ def download_leaflet(page, leaflet_url, config):
 
 def run(config):
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=config.get("headless", True))
-        page = browser.new_page()
+        browser_kwargs = {
+            "headless": config.get("headless", True),
+        }
+
+        browser = playwright.chromium.launch(**browser_kwargs)
+        page = browser.new_page(viewport={"width": 1920, "height": 1080})
 
         print(f"Opening: {MAIN_URL}")
-        page.goto(MAIN_URL, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+        page.goto(MAIN_URL, wait_until="networkidle", timeout=PAGE_TIMEOUT)
 
         # Reject cookies if present
         try:
