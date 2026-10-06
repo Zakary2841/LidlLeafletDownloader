@@ -1,12 +1,6 @@
 {
-  "output_dir": "leaflets",
+  "output_dir": "Leaflets",
   "headless": true,
-  "cookies": {
-    "st": "",
-    "ar": "",
-    "wh": "",
-    "zn": ""
-  },
   "pushover": {
     "enabled": false,
     "token": "",

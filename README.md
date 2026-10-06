@@ -24,9 +24,10 @@ A small Python tool that checks Lidl's UK online leaflets page, downloads any ne
 2. Create a virtual environment and install dependencies:
 
    ```bash
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate        # Linux/macOS
    # or
+   python -m venv venv
    venv\Scripts\activate           # Windows
    ```
 
@@ -112,7 +113,7 @@ On Linux or macOS:
 
 ```bash
 source venv/bin/activate # Linux/macOS
-python download_lidl.py
+python3 download_lidl.py
 ```
 
 ## Automation
@@ -122,7 +123,7 @@ You can schedule the script with Windows Task Scheduler, cron, or any other sche
 Example cron entry running every Tuesday morning:
 
 ```cron
-0 9 * * 2 cd /path/to/lidl-leaflets && venv/bin/python download_lidl.py
+0 9 * * 2 cd /path/to/lidl-leaflets && venv/bin/python3 download_lidl.py
 ```
 
 ## Files

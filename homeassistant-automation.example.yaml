@@ -18,10 +18,7 @@ action:
               title: "New Lidl leaflet"
               message: "{{ trigger.json.filename }}"
               data:
-                ttl: 0
-                priority: high
                 channel: LidlLeaflets
-                sticky: false
                 tag: "{{ trigger.json.filename }}"
                 clickAction: "{{ trigger.json.viewer_url }}"
                 actions:
@@ -39,10 +36,7 @@ action:
               title: "Lidl leaflet download failed"
               message: "{{ trigger.json.message[:250] }}"
               data:
-                ttl: 0
-                priority: high
                 channel: LidlLeaflets
-                sticky: false
                 tag: lidl_leaflet_error
                 notification_icon: mdi:alert
                 color: red

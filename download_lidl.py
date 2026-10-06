@@ -13,7 +13,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
-MAIN_URL = "https://www.lidl.co.uk/c/online-leaflets/s10023175"
+MAIN_URL = "https://www.lidl.co.uk/c/online-leaflets/s10023175?ar=10"
+PAGE_TIMEOUT = 30000
 
 
 def load_config():
@@ -24,24 +25,117 @@ def load_config():
         return json.load(file)
 
 
-def safe_filename(filename):
-    filename = filename.split("?")[0]
-    filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+def extract_title_from_pdf_slug(pdf_url):
+    pdf_name = Path(pdf_url).name
 
-    if not filename.lower().endswith(".pdf"):
-        filename += ".pdf"
-
-    return filename
-
-
-def week_folder_name(filename):
-    match = re.search(r"(\d{2}-\d{2}-\d{2}-\d{2})", filename)
+    match = re.match(
+        r"\d{2}-\d{2}-\d{2}-\d{2}-(.+?)(?:-\d+)?\.pdf$",
+        pdf_name,
+        re.IGNORECASE,
+    )
 
     if match:
-        return match.group(1)
+        slug = match.group(1)
+    else:
+        slug = Path(pdf_name).stem
 
-    year, week, _ = datetime.now().isocalendar()
-    return f"{year}-W{week:02d}"
+    return slug.replace("-", " ").title().replace(" ", "-")
+
+
+def is_weekly_leaflet(leaflet_url, pdf_url):
+    leaflet_slug = Path(leaflet_url.split("/ar/")[0]).name.lower()
+    pdf_slug = Path(pdf_url).stem.lower()
+
+    return "weekly" in leaflet_slug or "weekly" in pdf_slug
+
+
+def normalize_filename(leaflet_url, pdf_url, current_year):
+    pdf_name = Path(pdf_url).name
+
+    date_match = re.match(
+        r"(?P<sd>\d{2})-(?P<sm>\d{2})-(?P<ed>\d{2})-(?P<em>\d{2})-(?P<slug>.+?)(?:-\d+)?\.pdf$",
+        pdf_name,
+        re.IGNORECASE,
+    )
+
+    if date_match:
+        start_day = date_match.group("sd")
+        start_month = date_match.group("sm")
+        end_day = date_match.group("ed")
+        end_month = date_match.group("em")
+
+        start_year = current_year
+        end_year = current_year
+
+        if int(end_month) < int(start_month):
+            end_year = current_year + 1
+
+        title = extract_title_from_pdf_slug(pdf_url)
+
+        return (
+            f"{start_year}-{start_month}-{start_day}_"
+            f"{end_year}-{end_month}-{end_day}-{title}.pdf"
+        )
+
+    return pdf_name
+
+
+def folder_period_from_filename(filename):
+    match = re.match(
+        r"(\d{4})-(\d{2})-(\d{2})_(\d{4})-(\d{2})-(\d{2})",
+        filename,
+    )
+
+    if not match:
+        return None
+
+    start_year, start_month, start_day, end_year, end_month, end_day = match.groups()
+
+    def month_name(month):
+        names = {
+            "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr",
+            "05": "May", "06": "Jun", "07": "Jul", "08": "Aug",
+            "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec",
+        }
+        return names.get(month, month)
+
+    return f"{month_name(start_month)}{int(start_day):d}-{month_name(end_month)}{int(end_day):d}"
+
+
+def year_week_from_filename(filename):
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})_\d{4}-\d{2}-\d{2}", filename)
+
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        date = datetime(year, month, day)
+        return date.isocalendar()[:2]
+
+    date = datetime.now()
+    return date.isocalendar()[:2]
+
+
+def sanitize_folder_name(name):
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    name = re.sub(r"_+", "_", name)
+    return name.strip("_")
+
+
+def destination_folder(output_dir, filename, leaflet_url, pdf_url):
+    output_dir = Path(output_dir)
+    if not output_dir.is_absolute():
+        output_dir = BASE_DIR / output_dir
+
+    if is_weekly_leaflet(leaflet_url, pdf_url):
+        year, week = year_week_from_filename(filename)
+        period = folder_period_from_filename(filename)
+
+        if period:
+            return output_dir / str(year) / f"Week {week:02d} - {period}"
+
+    title = extract_title_from_pdf_slug(pdf_url)
+    return output_dir / "Specials" / sanitize_folder_name(title)
 
 
 def sha256_file(path):
@@ -54,13 +148,13 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def existing_hashes(week_dir):
+def existing_hashes(folder):
     hashes = set()
 
-    if not week_dir.exists():
+    if not folder.exists():
         return hashes
 
-    for path in week_dir.rglob("*.pdf"):
+    for path in folder.rglob("*.pdf"):
         if path.is_file():
             hashes.add(sha256_file(path))
 
@@ -155,17 +249,18 @@ def notify_error(config, message):
     })
 
 
-def save_version(temp_path, filename, leaflet_url, config):
-    output_dir = BASE_DIR / config["output_dir"]
-    output_dir.mkdir(parents=True, exist_ok=True)
+def save_version(temp_path, filename, leaflet_url, pdf_url, config):
+    output_dir = Path(config["output_dir"])
+    if not output_dir.is_absolute():
+        output_dir = BASE_DIR / output_dir
 
-    week_dir = output_dir / week_folder_name(filename)
-    versions_dir = week_dir / "versions"
+    folder = destination_folder(output_dir, filename, leaflet_url, pdf_url)
+    folder.mkdir(parents=True, exist_ok=True)
 
-    week_dir.mkdir(parents=True, exist_ok=True)
+    versions_dir = folder / "versions"
     versions_dir.mkdir(parents=True, exist_ok=True)
 
-    destination = week_dir / filename
+    destination = folder / filename
 
     size = temp_path.stat().st_size
 
@@ -180,8 +275,8 @@ def save_version(temp_path, filename, leaflet_url, config):
 
     new_hash = sha256_file(temp_path)
 
-    if new_hash in existing_hashes(week_dir):
-        print(f"No change for {filename} ({week_dir.name})")
+    if new_hash in existing_hashes(folder):
+        print(f"No change for {filename} ({folder.name})")
         return False
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -200,167 +295,46 @@ def save_version(temp_path, filename, leaflet_url, config):
     return True
 
 
-def get_main_page_leaflet_urls(config):
-    cookies = config.get("cookies", {})
-    print(f"Loaded {len(cookies)} cookie(s)")
+def get_leaflet_urls(page):
+    flyer_links = page.locator("a.flyer").all()
+    urls = []
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/131 Safari/537.36"
-        ),
-    }
+    for link in flyer_links:
+        href = link.get_attribute("href")
 
-    response = requests.get(MAIN_URL, headers=headers, cookies=cookies, timeout=60)
-    response.raise_for_status()
+        if href:
+            full_url = urljoin(page.url, href)
 
-    detail_pattern = re.compile(r"(/l/en/online-leaflets/[^\"'>\s]+)")
-    detail_urls = sorted(set(detail_pattern.findall(response.text)))
+            if full_url not in urls:
+                urls.append(full_url)
 
-    return [urljoin(MAIN_URL, path) for path in detail_urls]
+    return urls
 
 
-def dismiss_consent(page):
-    accept_selectors = [
-        "#onetrust-accept-btn-handler",
-        "button#onetrust-accept-btn-handler",
-        "button:has-text('Accept all')",
-        "button:has-text('Accept')",
-    ]
+def get_pdf_url(page):
+    page.wait_for_timeout(2000)
 
-    for selector in accept_selectors:
-        locator = page.locator(selector)
-
-        try:
-            if locator.count() > 0 and locator.first.is_visible():
-                locator.first.click(timeout=5000)
-                print(f"Accepted cookie banner using: {selector}")
-                page.wait_for_timeout(1500)
-                break
-        except Exception:
-            continue
+    link = page.locator("a[href*='.pdf']").first
+    if link.count() > 0 and link.is_visible():
+        return urljoin(page.url, link.get_attribute("href"))
 
     try:
-        page.evaluate(
-            """
-            () => {
-                const selectors = [
-                    '#onetrust-consent-sdk',
-                    '.onetrust-pc-dark-filter',
-                    '.ot-fade-in',
-                ];
-                for (const selector of selectors) {
-                    document.querySelectorAll(selector)
-                        .forEach((element) => element.remove());
-                }
-                document.body.style.overflow = 'auto';
-            }
-            """
-        )
-    except Exception as error:
-        print(f"Could not remove consent overlay: {error}")
+        menu_button = page.locator("button[aria-label='Menu']").first
+        if menu_button.is_visible():
+            print("PDF not visible, opening Menu...")
+            menu_button.click()
+            page.wait_for_timeout(1000)
 
-    page.wait_for_timeout(500)
-
-
-def find_pdf_button(page):
-    selectors = [
-        "a:has-text('PDF download')",
-        "button:has-text('PDF download')",
-        "a[href*='.pdf']",
-        "a[download]",
-    ]
-
-    for selector in selectors:
-        locator = page.locator(selector)
-
-        if locator.count() > 0:
-            return locator.first
-
-    return None
-
-
-def extract_pdf_url(page):
-    menu_button = page.locator("button[aria-label='Menu']")
-
-    if menu_button.count() == 0:
-        menu_button = page.locator("button:has-text('Menu')")
-
-    if menu_button.count() == 0:
-        menu_button = page.get_by_role(
-            "button",
-            name=re.compile(r"menu", re.IGNORECASE),
-        )
-
-    if menu_button.count() == 0:
-        print("Could not find the Menu button")
-        return None
-
-    try:
-        menu_button.first.click(timeout=15000)
+            link = page.locator("a[href*='.pdf']").first
+            if link.count() > 0 and link.is_visible():
+                return urljoin(page.url, link.get_attribute("href"))
     except Exception:
-        print("Menu click was blocked, forcing the click")
-        dismiss_consent(page)
-        menu_button.first.click(force=True, timeout=15000)
+        pass
 
-    page.wait_for_timeout(1500)
-
-    pdf_button = find_pdf_button(page)
-
-    if pdf_button is None:
-        print("Could not find the PDF download button")
-        return None
-
-    # First try: the button might already be a link with the PDF URL
-    href = pdf_button.get_attribute("href")
-
-    if href:
-        full_url = urljoin(page.url, href)
-
-        if full_url.lower().endswith(".pdf") or ".pdf?" in full_url.lower():
-            print(f"Found PDF URL from href: {full_url}")
-            return full_url
-
-    # Second try: click it and intercept the network request
-    captured_url = [None]
-
-    def handle_request(request):
-        url = request.url
-
-        if url.lower().endswith(".pdf") or ".pdf?" in url.lower():
-            if captured_url[0] is None:
-                captured_url[0] = url
-                print(f"Intercepted PDF request: {url}")
-
-    page.on("request", handle_request)
-
-    try:
-        print("Clicking PDF download and intercepting request")
-
-        pdf_button.click(timeout=15000)
-        page.wait_for_timeout(3000)
-
-        if captured_url[0]:
-            return captured_url[0]
-
-        # Third try: page may have navigated directly to the PDF
-        current_url = page.url
-
-        if current_url.lower().endswith(".pdf") or ".pdf?" in current_url.lower():
-            print(f"Page navigated to PDF: {current_url}")
-            return current_url
-
-    except Exception as error:
-        print(f"Error clicking PDF button: {error}")
-
-    finally:
-        page.remove_listener("request", handle_request)
-
-    print("Could not determine PDF URL")
     return None
 
 
-def download_pdf_with_requests(pdf_url, config):
+def download_pdf_with_requests(pdf_url):
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -368,13 +342,7 @@ def download_pdf_with_requests(pdf_url, config):
         ),
     }
 
-    response = requests.get(
-        pdf_url,
-        headers=headers,
-        cookies=config["cookies"],
-        timeout=120,
-    )
-
+    response = requests.get(pdf_url, headers=headers, timeout=120)
     response.raise_for_status()
 
     temp_path = BASE_DIR / "temp_download.pdf"
@@ -385,29 +353,24 @@ def download_pdf_with_requests(pdf_url, config):
     return temp_path
 
 
-def download_leaflet(browser, leaflet_url, config):
-    page = browser.new_page()
-
+def download_leaflet(page, leaflet_url, config):
     try:
-        print(f"Opening leaflet: {leaflet_url}")
+        print(f"\nProcessing leaflet: {leaflet_url}")
 
-        page.goto(leaflet_url, wait_until="domcontentloaded", timeout=120000)
-        page.wait_for_timeout(5000)
+        page.goto(leaflet_url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
 
-        dismiss_consent(page)
-
-        pdf_url = extract_pdf_url(page)
+        pdf_url = get_pdf_url(page)
 
         if not pdf_url:
             print(f"Could not find PDF URL for {leaflet_url}")
             return False
 
-        print(f"PDF URL: {pdf_url}")
+        print(f"Found PDF: {pdf_url}")
 
-        filename = safe_filename(Path(pdf_url).name)
+        filename = normalize_filename(leaflet_url, pdf_url, datetime.now().year)
 
-        temp_path = download_pdf_with_requests(pdf_url, config)
-        result = save_version(temp_path, filename, leaflet_url, config)
+        temp_path = download_pdf_with_requests(pdf_url)
+        result = save_version(temp_path, filename, leaflet_url, pdf_url, config)
         temp_path.unlink(missing_ok=True)
 
         return result
@@ -420,25 +383,35 @@ def download_leaflet(browser, leaflet_url, config):
         print(f"Error processing leaflet: {error}")
         return False
 
-    finally:
-        page.close()
-
 
 def run(config):
-    leaflet_urls = get_main_page_leaflet_urls(config)
-
-    print(f"Found {len(leaflet_urls)} leaflet link(s)")
-    for url in leaflet_urls:
-        print(f"  {url}")
-
-    if not leaflet_urls:
-        raise RuntimeError("No leaflet links were found.")
-
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=config.get("headless", True))
+        page = browser.new_page()
+
+        print(f"Opening: {MAIN_URL}")
+        page.goto(MAIN_URL, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT)
+
+        # Reject cookies if present
+        try:
+            if page.is_visible("#onetrust-reject-all-handler"):
+                page.click("#onetrust-reject-all-handler")
+                print("Rejected cookies.")
+                page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+        leaflet_urls = get_leaflet_urls(page)
+
+        print(f"Found {len(leaflet_urls)} leaflet(s).")
+        for url in leaflet_urls:
+            print(f"  {url}")
+
+        if not leaflet_urls:
+            raise RuntimeError("No leaflet links were found.")
 
         for leaflet_url in leaflet_urls:
-            download_leaflet(browser, leaflet_url, config)
+            download_leaflet(page, leaflet_url, config)
 
         browser.close()
 
